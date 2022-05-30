@@ -194,11 +194,11 @@ export const workflowRun = mixins(
 						const node = workflow.nodes[nodeName];
 
 						if (node.pinData) {
-							console.log('Assigning pinData as runData for', nodeName);
+							// console.log('Assigning pinData as runData for', nodeName);
 							newRunData[nodeName] = this.toTaskData(node.pinData);
 						} else {
 							// @DELETE branch only for debug logging
-							console.log('Skipping runData assignment for', nodeName);
+							// console.log('Skipping runData assignment for', nodeName);
 						}
 						continue;
 					}
@@ -214,7 +214,7 @@ export const workflowRun = mixins(
 					}
 
 					if (runData[nodeName]) {
-						console.log('Assigning runData for', nodeName);
+						// console.log('Assigning runData for', nodeName);
 						newRunData[nodeName] = runData[nodeName].slice(0, 1);
 					}
 				}
