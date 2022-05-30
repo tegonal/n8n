@@ -29,6 +29,9 @@ import {
 	LoggerProxy as Logger,
 	NodeApiError,
 	NodeOperationError,
+	PinData,
+	PinDataConnections,
+	PinDataNode,
 	Workflow,
 	WorkflowExecuteMode,
 	WorkflowOperationError,
@@ -66,6 +69,44 @@ export class WorkflowExecute {
 	}
 
 	/**
+	 * Get all nodes holding pin data in a workflow.
+	 */
+	#getPinDataNodes(workflow: Workflow): PinDataNode[] {
+		return Object.values(workflow.nodes).filter(
+			(node): node is PinDataNode => node.pinData !== undefined,
+		);
+	}
+
+	/**
+	 * Get the names of the children nodes of a node in a workflow.
+	 */
+	#getNextNodeNames(parentNodeName: string, workflow: Workflow): string[] {
+		return workflow.getConnectedNodes(workflow.connectionsBySourceNode, parentNodeName, 'main', 1);
+	}
+
+	/**
+	 * Make a map connecting the names of nodes receiving pin data to nodes providing it.
+	 */
+	#makePinDataConnections(workflow: Workflow): PinDataConnections {
+		const pinDataNodes = this.#getPinDataNodes(workflow);
+
+		return pinDataNodes.reduce<PinDataConnections>((connections, pinDataNode) => {
+			for (const name of this.#getNextNodeNames(pinDataNode.name, workflow)) {
+				connections[name] = pinDataNode;
+			}
+
+			return connections;
+		}, {});
+	}
+
+	#toExecuteData(node: INode, pinData: PinData): IExecuteData {
+		return {
+			node,
+			data: { main: [[{ json: pinData }]] },
+		};
+	}
+
+	/**
 	 * Executes the given workflow.
 	 *
 	 * @param {Workflow} workflow The workflow to execute
@@ -93,21 +134,16 @@ export class WorkflowExecute {
 			runNodeFilter.push(destinationNode);
 		}
 
-		// Initialize the data of the start nodes
-		const nodeExecutionStack: IExecuteData[] = [
-			{
-				node: startNode,
-				data: {
-					main: [
-						[
-							{
-								json: {},
-							},
-						],
-					],
-				},
-			},
-		];
+		// Initialize start node with an empty item
+		const nodeExecutionStack: IExecuteData[] = [this.#toExecuteData(startNode, {})];
+
+		// Populate pin data for nodes receiving pin data
+		const connections = this.#makePinDataConnections(workflow);
+
+		for (const [nextNodeName, { pinData }] of Object.entries(connections)) {
+			const nextNode = workflow.nodes[nextNodeName];
+			nodeExecutionStack.push(this.#toExecuteData(nextNode, pinData));
+		}
 
 		this.runExecutionData = {
 			startData: {
@@ -159,7 +195,6 @@ export class WorkflowExecute {
 		const waitingExecution: IWaitingForExecution = {};
 		for (const startNode of startNodes) {
 			incomingNodeConnections = workflow.connectionsByDestinationNode[startNode];
-
 			const incomingData: INodeExecutionData[][] = [];
 
 			if (incomingNodeConnections === undefined) {
@@ -689,6 +724,8 @@ export class WorkflowExecute {
 					executionData =
 						this.runExecutionData.executionData!.nodeExecutionStack.shift() as IExecuteData;
 					executionNode = executionData.node;
+
+					if (executionNode.pinData) continue;
 
 					Logger.debug(`Start processing node "${executionNode.name}"`, {
 						node: executionNode.name,

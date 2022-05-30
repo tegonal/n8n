@@ -781,7 +781,19 @@ export interface INode {
 	parameters: INodeParameters;
 	credentials?: INodeCredentials;
 	webhookId?: string;
+	pinData?: PinData;
 }
+
+/**
+ * TODO: Aliasing to `JsonObject` causes TS/TypeORM to complain in some DB calls: "Type instantiation is excessively deep and possibly infinite"
+ */
+export type PinData = { [key: string]: any };
+
+export type PinDataNode = INode & { pinData: PinData };
+
+export type PinDataConnections = {
+	[pinDataRecipientNodeName: string]: PinDataNode;
+};
 
 export interface INodes {
 	[key: string]: INode;

@@ -5,9 +5,14 @@ import {
 } from '@/Interface';
 
 import {
+	INode,
 	IRunData,
 	IRunExecutionData,
+	ITaskData,
 	NodeHelpers,
+	PinData,
+	PinDataNode,
+	Workflow,
 } from 'n8n-workflow';
 
 import { externalHooks } from '@/components/mixins/externalHooks';
@@ -57,6 +62,32 @@ export const workflowRun = mixins(
 
 			return response;
 		},
+
+		getPinDataIndexes(nodeNames: string[]) {
+			const workflow = this.getWorkflow();
+
+			return nodeNames.reduce<number[]>((acc, name, index) => {
+				if (workflow.nodes[name].pinData !== undefined) acc.push(index);
+				return acc;
+			}, []);
+		},
+
+		getPinDataNodes(workflow: Workflow): PinDataNode[] {
+			return Object.values(workflow.nodes).filter(
+				(node): node is PinDataNode => node.pinData !== undefined,
+			);
+		},
+
+		toTaskData(pinData: PinData): ITaskData[] {
+			return [
+				{
+					startTime: 0,
+					executionTime: 0,
+					data: { main: [ [ { json: pinData }] ] },
+				},
+			];
+		},
+
 		async runWorkflow (nodeName?: string, source?: string): Promise<IExecutionPushResponse | undefined> {
 			const workflow = this.getWorkflow();
 
@@ -110,43 +141,106 @@ export const workflowRun = mixins(
 
 				const runData = this.$store.getters.getWorkflowRunData;
 
-				let newRunData: IRunData | undefined;
+				let newRunData: IRunData | undefined = {};
 
 				const startNodes: string[] = [];
 
-				if (runData !== null && Object.keys(runData).length !== 0) {
-					newRunData = {};
+				/**
+				 * Collect all parents for the clicked node, i.e. all nodes leading up to
+				 * the clicked node, from a single branch or multiple branches.
+				 */
+				const parentNodes = [
+					...directParentNodes.flatMap(dpn => workflow.getParentNodes(dpn, 'main')),
+					...directParentNodes,
+				];
 
-					// Go over the direct parents of the node
-					for (const directParentNode of directParentNodes) {
-						// Go over the parents of that node so that we can get a start
-						// node for each of the branches
-						const parentNodes = workflow.getParentNodes(directParentNode, 'main');
+				/**
+				 * For pin-data workflow, mark start nodes
+				 *
+				 * For every parent node immediately following a pin-data node,
+				 * mark them as nodes to start the execution from.
+				 *
+				 * For any parent nodes preceding the earliest pin-data node,
+				 * mark the first as a node to start the execution from.
+				 */
+				const pinDataIndexes = this.getPinDataIndexes(parentNodes);
+				const workflowHasPinData = pinDataIndexes.length > 0;
 
-						// Add also the direct parent to be checked
-						parentNodes.push(directParentNode);
-
-						for (const parentNode of parentNodes) {
-							if (runData[parentNode] === undefined || runData[parentNode].length === 0) {
-								// When we hit a node which has no data we stop and set it
-								// as a start node the execution from and then go on with other
-								// direct input nodes
-								startNodes.push(parentNode);
-								break;
-							}
-							newRunData[parentNode] = runData[parentNode].slice(0, 1);
-						}
+				if (workflowHasPinData) {
+					for (const index of pinDataIndexes) {
+						startNodes.push(parentNodes[index + 1]);
 					}
 
-					if (Object.keys(newRunData).length === 0) {
-						// If there is no data for any of the parent nodes make sure
-						// that run data is empty that it runs regularly
-						newRunData = undefined;
+					const earliestPinDataIndex = Math.min(...pinDataIndexes);
+
+					for (const [nodeIndex, nodeName] of parentNodes.entries()) {
+						if (nodeIndex < earliestPinDataIndex) {
+							startNodes.push(nodeName);
+							break;
+						}
 					}
 				}
 
+				/**
+				 * If the workflow contains pin data, assign pin data to pin-data nodes and leave
+				 * non-pin-data nodes empty. Run data is not used in a workflow containing pin data.
+				 *
+				 * If the workflow contains no pin data, assign run data to run data nodes, and
+				 * mark the first non-run-data node as a node to start the execution from.
+				 */
+				for (const nodeName of parentNodes) {
+
+					if (workflowHasPinData) {
+						const node = workflow.nodes[nodeName];
+
+						if (node.pinData) {
+							console.log('Assigning pinData as runData for', nodeName);
+							newRunData[nodeName] = this.toTaskData(node.pinData);
+						} else {
+							// @DELETE branch only for debug logging
+							console.log('Skipping runData assignment for', nodeName);
+						}
+						continue;
+					}
+
+					if (!runData) continue;
+
+					if (runData[nodeName] === undefined || runData[nodeName].length === 0) {
+						// When we hit a node which has no data we stop and set it
+						// as a start node the execution from and then go on with other
+						// direct input nodes
+						startNodes.push(nodeName);
+						break;
+					}
+
+					if (runData[nodeName]) {
+						console.log('Assigning runData for', nodeName);
+						newRunData[nodeName] = runData[nodeName].slice(0, 1);
+					}
+				}
+
+				/**
+				 * If no start nodes and clicked node, mark clicked node as start node.
+				 */
 				if (startNodes.length === 0 && nodeName !== undefined) {
 					startNodes.push(nodeName);
+				}
+
+				/**
+				 * If no start nodes and no clicked node, populate run data with pin data.
+				 */
+				if (startNodes.length === 0 && nodeName === undefined) {
+					for (const node of this.getPinDataNodes(workflow)) {
+						newRunData[node.name] = this.toTaskData(node.pinData);
+					}
+				}
+
+				/**
+				 * If no run data was assigned for any of the parent nodes,
+				 * clear it to ensure a full workflow execution.
+				 */
+				if (Object.keys(newRunData).length === 0) {
+					newRunData = undefined;
 				}
 
 				const isNewWorkflow = this.$store.getters.isNewWorkflow;
